@@ -188,6 +188,61 @@ test('a documented precondition variable without its binding precondition fails'
   assert.ok(!output.includes('"$rid"'), output);
 });
 
+test('the 175c0b topology bindings: $sa rides the room/member staging, $sd needs member:b, $sb rides daemon:second', () => {
+  // $sa: bound wherever $self_sid is (room/member/file staging ensures the
+  // authority subject). No room/member precondition → still refused.
+  const noRoom = runValidator([
+    fileCase({
+      operation: 'file.list',
+      requires: ['subject'],
+      steps: [{ call: 'file.list', in: { room_id: '$sa' }, ...LIST_IN }],
+    }),
+  ]);
+  assert.ok(noRoom.includes('"$sa" (in.room_id) names a precondition variable'), noRoom);
+  const withRoom = runValidator([
+    fileCase({
+      operation: 'file.list',
+      requires: ['subject', 'room:live'],
+      steps: [{ call: 'file.list', in: { room_id: '$rid', author: '$sa' }, ...LIST_IN }],
+    }),
+  ]);
+  assert.ok(!withRoom.includes('"$sa"'), withRoom);
+  // $sd: the member-daemon subject — member:b binds it, room:live alone does not.
+  const noMember = runValidator([
+    fileCase({
+      operation: 'file.list',
+      requires: ['subject', 'room:live'],
+      steps: [{ call: 'file.list', in: { room_id: '$rid', author: '$sd' }, ...LIST_IN }],
+    }),
+  ]);
+  assert.ok(noMember.includes('"$sd" (in.author) names a precondition variable'), noMember);
+  const withMember = runValidator([
+    fileCase({
+      operation: 'file.list',
+      requires: ['subject', 'room:live', 'member:b'],
+      steps: [{ call: 'file.list', in: { room_id: '$rid', author: '$sd' }, ...LIST_IN }],
+    }),
+  ]);
+  assert.ok(!withMember.includes('"$sd"'), withMember);
+  // $sb: daemon:second stages the invitee slot too, so it binds $sb as well.
+  const withSecond = runValidator([
+    fileCase({
+      operation: 'file.list',
+      requires: ['subject', 'room:live', 'daemon:second'],
+      steps: [{ call: 'file.list', in: { room_id: '$rid', author: '$sb' }, ...LIST_IN }],
+    }),
+  ]);
+  assert.ok(!withSecond.includes('"$sb"'), withSecond);
+  const withoutSecond = runValidator([
+    fileCase({
+      operation: 'file.list',
+      requires: ['subject', 'room:live'],
+      steps: [{ call: 'file.list', in: { room_id: '$rid', author: '$sb' }, ...LIST_IN }],
+    }),
+  ]);
+  assert.ok(withoutSecond.includes('"$sb" (in.author) names a precondition variable'), withoutSecond);
+});
+
 test('an explicit save binds a documented name whose precondition is absent', () => {
   const output = runValidator([
     fileCase({

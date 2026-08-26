@@ -51,22 +51,35 @@ export const EXECUTABLE_CONTROLS = new Set(
 /**
  * `requires` tokens this runner genuinely establishes today.
  * Every OTHER well-formed token in the checker's closed `requires`
- * vocabulary — link:*, room:removed, room:foreign, member:agent,
+ * vocabulary — link:down, link:relay, link:slow, room:removed,
+ * room:foreign, room:quiescent, room:with_history, member:agent,
  * member:non_agent, daemon:restartable, observe:*, resource:large_file,
  * resource:fetched_file, fault:*, control:concurrency — is NOT established,
  * and the runner throws before staging anything when a case declares it.
  *
- * Deliberately NOT listed (staged unfaithfully — refusing loudly is the
- * honest state until their setup is real; PR #311 review round):
- *  - `room:quiescent` / `room:with_history`: #establishRequires stages both
- *    exactly like `room:live` (activate; no history is ever authored), so
- *    claiming either state would be a claim the staging cannot back.
- *  - `room:left`: `$rid_left` is created but no member ever joins and
- *    leaves it, so it is not a left room.
- *  - `member:b` / `member:c`: their sessions route to the PRIMARY daemon
- *    (the routing regex matches second/outsider/principal_b/peer/remote
- *    only), whose single subject is the authority's — the "member" is not
- *    a distinct invited subject.
+ * 175c0b promoted four tokens from the PR #311 refusal list, each backed by
+ * real staging (topology.mjs):
+ *  - `link:up`: the case's daemons run WITHOUT `--loopback` (RealNetwork:
+ *    the invited join dials the minter via discovery, which loopback mode
+ *    cannot do); a link peer is staged when the case stages no second
+ *    subject; a per-case witness re-verifies the topology before steps, and
+ *    main.mjs runs the RealNetwork canary before any selected link:up case.
+ *  - `member:b` / `member:c`: a REAL additional member on its OWN daemon
+ *    (one daemon, one subject): subject.ensure, invite.mint by the
+ *    authority, invite.redeem over the RealNetwork link, room.activate.
+ *  - `room:left`: a room a member genuinely joined and left (create, mint,
+ *    redeem, activate, room.leave) — binding `$rid_left`.
+ *
+ * Deliberately NOT listed (refused loudly — the honest state until their
+ * setup is real):
+ *  - `room:quiescent` / `room:with_history`: faithful staging needs authored
+ *    room history and liveness timelines (a deactivated or never-activated
+ *    room with real events) — room-domain scenario work, not topology
+ *    (175c2). Staging them exactly like `room:live` (the pre-175c0b shape)
+ *    would claim states the setup cannot back.
+ *  - `member:agent` / `member:non_agent`: agent/non-agent membership
+ *    standing is invite-domain scenario staging (role/standing semantics),
+ *    not topology resolution.
  *
  * `control:limits` is listed because the runner surfaces the daemon's served
  * limits to every case (the hello capture and the pre-seeded `$limits`); the
@@ -85,6 +98,10 @@ export const REQUIRES_IMPLEMENTED = Object.freeze(new Set([
   'daemon:second',
   'room:plain',
   'room:live',
+  'room:left',
+  'member:b',
+  'member:c',
+  'link:up',
   'resource:tcp_service',
   'resource:shared_file',
   'control:reconnect',

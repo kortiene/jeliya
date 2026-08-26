@@ -650,26 +650,30 @@ root they read from — now expressed as the path's root.
 small documented set before step 1 — `$op_id_new`, `$op_id_fixed`, `$limits`,
 `$daemon`, `$daemon_sg` — and the preconditions a case **declares** in
 `requires` bind the fixture identifiers the case operates on: room, member,
-or file-resource setup binds the case's `$rid` and `$self_sid` (a file exists
-only in a room, so a file resource establishes the room too; `room:left`
-additionally binds `$rid_left`); `room:foreign` binds `$foreign_rid` and
-`$foreign_fid`; `member:b`/`member:c` bind `$member_b_sid`/`$member_c_sid`;
-`subject:second` binds `$sb` and `subject:outsider` `$sc`;
+or file-resource setup binds the case's `$rid`, `$self_sid`, and `$sa` (the
+authority subject id; a file exists only in a room, so a file resource
+establishes the room too; `room:left` additionally binds `$rid_left`);
+`room:foreign` binds `$foreign_rid` and `$foreign_fid`; `member:b` binds
+`$member_b_sid` and `$sd` (the member-daemon subject — the same value);
+`member:c` binds `$member_c_sid`; `subject:second` (or `daemon:second`)
+binds `$sb` and `subject:outsider` binds `$sc`;
 `resource:tcp_service` binds `$svc_port` and `$svc_port_v6`; and the file
 resource preconditions (`resource:shared_file`, `resource:fetched_file`,
 `resource:large_file`) bind `$fid`, with the large-file companions
 `$fid_unsized` and `$fid_one_byte` bound by `resource:large_file`. Like the
 deferred-call contract, this states the DSL contract; the current live
 harness pre-seeds the unconditional set and implements the
-`room:plain`/`live`/`quiescent`/`with_history`/`left`, single-letter member
-(`member:b`/`member:c`), second-subject/outsider, and tcp-service bindings,
-while `room:removed`, the agent-member variants, the remaining file-resource
-bindings, and the foreign-room bindings await their executor.
-`resource:shared_file` is implemented: the harness genuinely streams a
-4096-byte seed file into the required room through the byte-stream executor
-and binds `$fid` from the daemon's reply; `resource:fetched_file` and
-`resource:large_file` stay unestablished because a fetched file needs a
-provider peer the single-subject harness cannot honestly supply.
+`room:plain`/`live`/`left`, single-letter member (`member:b`/`member:c`),
+second-subject/outsider, and tcp-service bindings, while `room:removed`,
+the agent-member variants, the remaining file-resource bindings, and the
+foreign-room bindings await their executor. Each staged subject id comes
+from a real `subject.ensure` reply on its own daemon — never a literal
+fallback. `resource:shared_file` is implemented: the harness genuinely
+streams a 4096-byte seed file into the required room through the
+byte-stream executor and binds `$fid` from the daemon's reply;
+`resource:fetched_file` and `resource:large_file` stay unestablished
+because their provider-peer staging belongs to the scenario slices that
+exercise them (175c1+).
 
 The validator enforces the contract in **every domain** (generalized from
 `files.json` by the 175c0a debt ratchet): every `$name` a step
@@ -803,22 +807,94 @@ that names no code is a signal the taxonomy is incomplete — which is how
 **Runner honesty:** the vocabulary above is closed for AUTHORING (the checker
 rejects a token outside it), but not every token is ESTABLISHED by the replay
 runner. `capabilities.mjs` carries the single implemented set (today: the
-`subject`/`daemon` families, `room:plain`, `room:live`,
-`resource:tcp_service`, `resource:shared_file`, plus `control:reconnect`
-(the verb is executable), `control:limits` (the served limits are surfaced
-to every case), and `control:clock` (the capped real wait)). A case
-declaring any other well-formed token — `link:*`, `room:removed`,
-`room:foreign`, `room:quiescent`, `room:left`, `room:with_history`,
-`member:*`, `daemon:restartable`, `observe:*`, `control:concurrency`,
-`resource:large_file`, `resource:fetched_file`, `fault:*` — is REFUSED
-before staging begins, with the token named: running it silently
-half-staged is the false green this harness exists to prevent. The
-room-state and member tokens are refused not because staging crashes but
-because it would be UNFAITHFUL: the runner stages `room:quiescent` and
-`room:with_history` exactly like `room:live` (no history is authored),
-`room:left` without anyone joining and leaving, and `member:b`/`c`
-sessions on the primary daemon whose one subject is the authority's —
-so a case would run against preconditions it does not actually have.
+`subject`/`daemon` families, `room:plain`, `room:live`, `room:left`,
+`member:b`, `member:c`, `link:up`, `resource:tcp_service`,
+`resource:shared_file`, plus `control:reconnect` (the verb is executable),
+`control:limits` (the served limits are surfaced to every case), and
+`control:clock` (the capped real wait)). A case declaring any other
+well-formed token — `link:down`/`relay`/`slow`, `room:removed`,
+`room:foreign`, `room:quiescent`, `room:with_history`, `member:agent`,
+`member:non_agent`, `daemon:restartable`, `observe:*`,
+`control:concurrency`, `resource:large_file`, `resource:fetched_file`,
+`fault:*` — is REFUSED before staging begins, with the token named: running
+it silently half-staged is the false green this harness exists to prevent.
+`room:quiescent` and `room:with_history` stay refused because faithful
+staging needs authored room history and liveness timelines — room-domain
+scenario work, not topology. `member:agent`/`member:non_agent` stay refused
+because agent standing is invite-domain scenario staging. The 175c0b
+topology made `link:up`, `member:b`/`member:c`, and `room:left` REAL: see
+"Actor resolution and RealNetwork topology" below.
+
+## Actor resolution and RealNetwork topology
+
+A daemon holds exactly ONE subject, so every distinct subject is a distinct
+daemon. The runner resolves each `on` label onto four finite axes —
+`{daemon_slot, subject_slot, principal_slot, connection_slot}` — through the
+DECLARED catalog in `harness/topology.mjs` (there is no regex routing and no
+default-to-primary):
+
+- **authority** (`subject:A`, `subject:authority`, `subject:self`; subject
+  `$sa`/`$self_sid`) — the primary daemon;
+- **invitee** (`subject:second`, `subject:invitee`, `subject:second_subject`,
+  `subject:joiner`; subject `$sb`) — the redeeming joiner's daemon;
+- **member** (`subject:B`, `subject:member`, `subject:member_b`,
+  `subject:member_nonagent`, `subject:former_member`; subject
+  `$sd`/`$member_b_sid`) — an additional active member's own daemon;
+- **member2** (`subject:D`, `subject:member_c`; subject
+  `$member_c_sid`) — a second additional member;
+- **outsider** (`subject:outsider`, `subject:bystander`, `subject:C`;
+  subject `$sc`) — a subject with no room relationship;
+- **agent** (`subject:member_agent`) — staged by `member:agent`, which is
+  not implemented.
+
+Principal semantics: `#N` suffixes (`subject:self#2`, `subject:A#2`) affect
+the CONNECTION axis only — same daemon, same subject, same dedup `cid`, a
+second socket. `subject:A2` and `principal:self`/`principal:second` are
+DISTINCT principals (own `cid`) on their base slot's daemon/subject — `A2`
+is not parsed as a `#N` suffix. `subject:same_principal` is the canonical
+principal reconnecting: same `cid`, and the new connection REPLACES the
+canonical one (later canonical-label steps resolve to the replacement).
+`session:cX` is an attached session (ephemeral per-connection principal).
+Canonical-family labels of one slot share ONE canonical connection. Two
+recorded domain overrides: in `subject-daemon.json`, `subject:B` and
+`subject:C` name second principals on the primary daemon (the max-frame and
+subject-store cases prove effects on THE daemon the frame hit — see the
+catalog comments). An undeclared label fails the case BEFORE any daemon
+spawns; a label whose slot the case's `requires` never staged fails as a
+missing-role setup error naming both. `topology.test.mjs` meta-tests the
+whole corpus against the catalog so the two cannot drift.
+
+**Conditional mode:** a daemon runs WITHOUT `--loopback` (RealNetwork — the
+invited join dials the minter via discovery, which loopback mode cannot do)
+exactly when a daemon must reach another: `link:up`, or a member join
+(`member:b`/`member:c`/`room:left`). Everything else — including
+`daemon:second`/`subject:second`, whose staging is a local `subject.ensure`
+— stays loopback. There is NO fallback in either direction. A member join
+activates the target room on the authority before minting (the redeem dials
+the authority's live room session; verified live, an invite into a room the
+authority never serves cannot be redeemed) — so a case that wants a
+non-live room authors its own `room.deactivate` afterwards, which is the
+corpus's own pattern. `link:up` with no other staged peer stages the member
+slot as the link peer and joins it, so the link is genuinely UP, not merely
+dialable; a case that already staged a second subject uses it as the peer.
+
+**Witnesses.** When a selected case uses `link:up`, the runner first
+executes a bounded, disposable, two-daemon RealNetwork CANARY (distinct
+subjects, create+activate, mint/redeem, joiner-timeline convergence, total
+cleanup); a canary failure is a harness setup ERROR that aborts the run —
+never an assertion FAIL, never a fallback. Every RealNetwork case then
+re-verifies its own staged topology BEFORE its authored steps (the canary
+is never a substitute): each staged join must be visible on both ends — the
+joiner's timeline shows authority-authored events, the authority's shows
+the member's join — under a bounded poll whose expiry is a setup ERROR.
+Neither witness uses `room.peers`: provider/consumer reachability
+observability is #50's oracle, not topology's.
+
+**Serialization:** RealNetwork selections require `--jobs 1` (`--jobs > 1`
+over such a selection is an explicit usage error before any daemon spawns);
+loopback-only selections keep parallelism. Total cleanup is the discipline:
+daemons stop gracefully and their data dirs are removed even when the
+process exited on its own (the leak probe pins zero new temp dirs).
 
 ## Debt ratchet
 

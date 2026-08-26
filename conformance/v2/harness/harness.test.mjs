@@ -109,8 +109,9 @@ test('the 26 CI-selected cases select cleanly through the same path', async () =
 // ── Requires honesty ───────────────────────────────────────────────────────
 
 test('a well-formed but unestablished requires token is refused', () => {
-  for (const token of ['link:up', 'link:down', 'room:removed', 'room:foreign', 'member:agent',
-    'member:non_agent', 'daemon:restartable', 'observe:frames', 'observe:network',
+  for (const token of ['link:down', 'link:relay', 'link:slow', 'room:removed', 'room:foreign',
+    'room:quiescent', 'room:with_history', 'member:agent', 'member:non_agent',
+    'daemon:restartable', 'observe:frames', 'observe:network',
     'control:concurrency', 'resource:large_file', 'resource:fetched_file', 'fault:backpressure']) {
     const err = unimplementedRequire([token]);
     assert.ok(err instanceof Error, token);
@@ -123,17 +124,26 @@ test('every implemented requires token passes the guard', () => {
   assert.equal(unimplementedRequire([...REQUIRES_IMPLEMENTED]), null);
 });
 
+test('the 175c0b-promoted topology tokens are implemented (link:up, member:b/c, room:left)', () => {
+  // The four tokens PR #311 refused as unfaithfully staged are now backed by
+  // real staging (RealNetwork daemons, distinct subjects, invite/redeem).
+  for (const token of ['link:up', 'member:b', 'member:c', 'room:left']) {
+    assert.ok(REQUIRES_IMPLEMENTED.has(token), `${token} must be implemented after 175c0b`);
+    assert.equal(unimplementedRequire([token]), null, token);
+  }
+});
+
 test('the runner refuses an unestablished token before spawning any daemon', async () => {
   const { Runner, Outcome } = await import(join(HERE, 'runner.mjs'));
   const runner = new Runner('/nonexistent/jeliyad-definitely-missing');
   const result = await runner.runCase({
     name: 'guard_probe', kind: 'success', operation: null,
     intent: 'Probes that the runner refuses unimplemented requires pre-stage.',
-    requires: ['daemon:fresh', 'link:up'],
+    requires: ['daemon:fresh', 'link:down'],
     steps: [{ call: 'room.list', in: {} }],
   });
   assert.equal(result.outcome, Outcome.ERROR);
-  assert.match(result.reason, /requires token "link:up"/);
+  assert.match(result.reason, /requires token "link:down"/);
   assert.match(result.reason, /does not establish it/);
   // The binary never existed: had staging begun, the failure would have been
   // a daemon-start error instead of the honesty message.
