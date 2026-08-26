@@ -103,23 +103,43 @@ export function subsetMatch(expected, actual, vars) {
   return deepEqual(expected, actual);
 }
 
-/** Collect every value at a wildcard path (`a.b[*].c`). Returns array of values.
- * Numeric bracket indices normalize to dot segments alongside the wildcard. */
+/** Collect every value at a wildcard path (`a.b[*].c`). Returns array of values. Numeric bracket indices normalize to dot segments alongside the wildcard.
+ *
+ * Wildcard semantics are "the assertion holds for EVERY element", so a
+ * branch where the remaining path does not resolve is RETAINED as
+ * `{node, found: false}` instead of being silently dropped — a mixed
+ * array (one peer with `link.since`, one `not_connected` peer without)
+ * must fail a `type`/`present` assertion on `[*].link.since`, not pass
+ * on the surviving branch (the PR #313 review round's false-green). */
 export function collectWildcard(root, path) {
   const parts = String(path).replace(/\[(\d+)\]/g, '.$1').split('.');
-  let frontier = [root];
+  let frontier = [{ node: root, found: true }];
   for (const part of parts) {
     const next = [];
-    for (const node of frontier) {
+    for (const entry of frontier) {
+      if (!entry.found) {
+        next.push(entry); // an unresolved branch stays unresolved
+        continue;
+      }
+      const node = entry.node;
       if (part === '*') {
-        if (Array.isArray(node)) next.push(...node);
-      } else if (node !== null && typeof node === 'object') {
         if (Array.isArray(node)) {
-          const idx = Number(part);
-          if (Number.isInteger(idx) && idx < node.length) next.push(node[idx]);
-        } else if (part in node) {
-          next.push(node[part]);
+          for (const el of node) next.push({ node: el, found: true });
+        } else {
+          // A wildcard over a non-array iterates nothing — one unresolved
+          // entry, so a value assertion on it fails instead of passing
+          // vacuously over an empty match.
+          next.push({ node: undefined, found: false });
         }
+      } else if (node !== null && typeof node === 'object' && !Array.isArray(node)) {
+        if (part in node) next.push({ node: node[part], found: true });
+        else next.push({ node: undefined, found: false });
+      } else if (Array.isArray(node)) {
+        const idx = Number(part);
+        if (Number.isInteger(idx) && idx < node.length) next.push({ node: node[idx], found: true });
+        else next.push({ node: undefined, found: false });
+      } else {
+        next.push({ node: undefined, found: false });
       }
     }
     frontier = next;
@@ -158,24 +178,30 @@ export function evalValueAssertion(a, ctx) {
   const root = rootName.startsWith('$') ? ctx.vars[rootName.slice(1)] : ctx.vars[rootName];
   const subPath = rest.join('.');
 
-  // Wildcard matches carry their elements as resolved values ({found,
-  // value} wrappers, exactly what `each` and the wildcard-level ops consume).
-  // The pre-175c1a engine fed RAW values here, so every wildcard value op
-  // (type/eq/member_of/len/no_nulls/…) false-reded with "did not resolve"
-  // and unique/increasing compared JSON.stringify(undefined) — the README's
-  // own canonical example (`out.rooms[*].role` + member_of) could not run.
+  // Wildcard matches carry one resolution per iterated element — branches
+  // where the path does not resolve are RETAINED (found:false) so "holds
+  // for every element" fails on a mixed array instead of passing on the
+  // surviving branch. (PR #313 review round: the pre-fix collector silently
+  // dropped unresolved branches, so `[*].link.since type ts` passed over a
+  // room with one connected and one not_connected peer.)
   const values = hasWildcard
-    ? collectWildcard(root, subPath).map((value) => ({ found: true, value }))
+    ? collectWildcard(root, subPath).map((entry) => ({ found: entry.found, value: entry.node }))
     : [resolvePath(root, subPath)];
 
-  // `present`/`absent` operate on resolvability, not value.
+  // `present`/`absent` operate on resolvability, not value — over a
+  // wildcard, `present` needs the tail on EVERY element and `absent` fails
+  // if ANY element has it.
   if (op === 'present') {
-    const r = hasWildcard ? { found: values.length > 0 } : values[0];
+    const r = hasWildcard
+      ? { found: values.length > 0 && values.every((v) => v.found) }
+      : values[0];
     if (!r.found) throw new AssertFailure(`expected ${rawPath} to be present`);
     return;
   }
   if (op === 'absent') {
-    const r = hasWildcard ? { found: values.length > 0 } : values[0];
+    const r = hasWildcard
+      ? { found: values.some((v) => v.found) }
+      : values[0];
     if (r.found) throw new AssertFailure(`expected ${rawPath} to be absent`, { got: r.value });
     return;
   }
@@ -186,6 +212,14 @@ export function evalValueAssertion(a, ctx) {
   // above, is the one op an empty match legitimately satisfies.)
   if (hasWildcard && values.length === 0) {
     throw new AssertFailure(`path ${rawPath} matched no elements — a wildcard value assertion cannot pass vacuously`);
+  }
+  // A mixed array — some elements resolve the tail, some do not — fails
+  // every value op on the first unresolved element, naming it.
+  if (hasWildcard) {
+    const unresolved = values.findIndex((v) => !v.found);
+    if (unresolved >= 0) {
+      throw new AssertFailure(`path ${rawPath} did not resolve for element [${unresolved}] — a wildcard value assertion must hold for every element`);
+    }
   }
 
   // Resolve the expected value, but NOT when it is a type tag or the assertion

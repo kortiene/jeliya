@@ -518,7 +518,11 @@ single object.
 A wildcard that matches **no** elements fails every value assertion ("matched
 no elements") — `holds for every element` is vacuously true over the empty
 set, and a vacuous pass is a false-green; `absent` is the one op an empty
-match legitimately satisfies.
+match legitimately satisfies. A **mixed** array — some elements resolve the
+tail, some do not — likewise fails every value assertion and `present`
+(naming the first unresolved element); a collector that silently dropped
+unresolved branches would pass on the survivor, which is the same
+false-green in a subtler shape.
 This is what lets one predicate replace the corpus's `every_row_has_fields`,
 `every_row_has_non_null`, `every_push_has_non_null`, `all_eq`, `every_has_key`,
 and `every_row_has_value`.

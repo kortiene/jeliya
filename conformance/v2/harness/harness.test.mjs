@@ -399,6 +399,53 @@ test('a wildcard that matches no elements fails every value op and never passes 
   evalValueAssertion({ path: 'out.peers[*].device_id', op: 'absent' }, ctx);
 });
 
+test('a MIXED wildcard keeps its unresolved branches and fails the assertion (PR #313 review)', async () => {
+  const { evalValueAssertion } = await import(join(HERE, 'assert.mjs'));
+  // One connected peer WITH link.since, one not_connected peer WITHOUT —
+  // the collector must not silently drop the unresolved branch and pass
+  // on the survivor.
+  const ctx = {
+    vars: {
+      out: {
+        peers: [
+          { device_id: 'd1', link: { state: 'direct', since: '2026-08-26T00:00:00Z' } },
+          { device_id: 'd2', link: { state: 'not_connected', reason: 'closed' } },
+        ],
+      },
+    },
+    observe: null,
+    sessions: null,
+  };
+  for (const a of [
+    { path: 'out.peers[*].link.since', op: 'type', value: 'ts' },
+    { path: 'out.peers[*].link.since', op: 'present' },
+    { path: 'out.peers[*].link.since', op: 'unique' },
+  ]) {
+    assert.throws(
+      () => evalValueAssertion(a, ctx),
+      a.op === 'present' ? /present/ : /did not resolve for element \[1\]|matched no elements/,
+      `${a.op} must fail while an element lacks the tail`,
+    );
+  }
+  // The all-resolving twin still passes, and absent correctly fails when
+  // SOME element has the key / holds when none does.
+  const okCtx = {
+    vars: { out: { peers: [
+      { device_id: 'd1', link: { state: 'direct', since: '2026-08-26T00:00:00Z' } },
+      { device_id: 'd2', link: { state: 'relay', since: '2026-08-26T00:00:01Z' } },
+    ] } },
+    observe: null,
+    sessions: null,
+  };
+  evalValueAssertion({ path: 'out.peers[*].link.since', op: 'type', value: 'ts' }, okCtx);
+  evalValueAssertion({ path: 'out.peers[*].link.since', op: 'present' }, okCtx);
+  assert.throws(
+    () => evalValueAssertion({ path: 'out.peers[*].link.since', op: 'absent' }, okCtx),
+    /absent/,
+  );
+  evalValueAssertion({ path: 'out.peers[*].link.nope', op: 'absent' }, okCtx);
+});
+
 process.on('exit', () => {
   for (const d of tempDirs.splice(0)) {
     try { rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ }
