@@ -486,6 +486,10 @@ export class Runner {
    */
   async #verifyLinkTopology({ plan, vars, sessions }) {
     const deadlineMs = LINK_WITNESS_DEADLINE_MS * this.timeoutScale;
+    const authority = sessions.get(vars.__case.topology.canonicalLabelFor('authority'));
+    if (!authority || !authority.open) {
+      throw new Error('link witness: the authority session is not open');
+    }
     for (const join of vars.__case.joins) {
       // Resolve the join's session exactly as #sessionFor keys it: canonical
       // family labels (subject:B / subject:member_b) share the member slot's
@@ -514,7 +518,6 @@ export class Runner {
       });
     }
     if (vars.__case.joins.length > 0) {
-      const authority = sessions.get(vars.__case.topology.canonicalLabelFor('authority'));
       const rids = [...new Set(vars.__case.joins.map((j) => vars[j.roomVar]))];
       for (const rid of rids) {
         await pollUntil({
@@ -531,12 +534,89 @@ export class Runner {
         });
       }
     } else if (plan.linkUp) {
-      // No staged join: witness the staged sessions are live. The case's own
-      // steps perform the cross-daemon operations (the invites shape).
-      for (const s of sessions.values()) {
-        if (!s.open) throw new Error(`link witness: staged session ${s.label} is not open`);
+      // No staged join: the case stages a second subject (the invites
+      // shape) but never joins it to anything, so there is no join to
+      // re-verify. Two open client sockets prove nothing about
+      // daemon-to-daemon connectivity — the run-level canary runs on
+      // DIFFERENT disposable daemons and is explicitly not a per-case
+      // substitute. The witness therefore performs a REAL cross-daemon
+      // round on the case's own daemons: a dedicated WITNESS room (never
+      // the case's `$rid`, whose membership/positions the case asserts
+      // on) that the link peer joins via mint/redeem — the same checks
+      // the canary makes, per-case (review-caught on PR #312: the
+      // sockets-open check could pass while the two case daemons could
+      // not communicate).
+      const topology = vars.__case.topology;
+      const peerSlot = ['invitee', 'member', 'member2', 'outsider']
+        .find((slot) => topology.daemonFor(slot));
+      if (!peerSlot) {
+        throw new Error('link witness: link:up with no join and no peer slot staged');
       }
-      this.log('link:up witnessed with no staged join (the case authors its own cross-daemon steps)');
+      const peerLabel = topology.canonicalLabelFor(peerSlot);
+      const peer = sessions.get(peerLabel);
+      if (!peer || !peer.open) {
+        throw new Error(`link witness: the ${peerSlot} peer session (${peerLabel}) is not open`);
+      }
+      const peerSid = peerSlot === 'invitee' ? vars.sb
+        : peerSlot === 'outsider' ? vars.sc
+        : peerSlot === 'member' ? (vars.sd ?? vars.member_b_sid)
+        : vars.member_c_sid;
+      if (!peerSid) {
+        throw new Error(`link witness: no bound subject id for the ${peerSlot} peer slot`);
+      }
+      const witnessRoom = await authority.call('room.create', { name: 'link-witness' });
+      if (!witnessRoom.ok) {
+        throw new Error(`link witness: room.create failed: ${JSON.stringify(witnessRoom.err)}`);
+      }
+      const wrid = witnessRoom.out.room_id;
+      const wAct = await authority.call('room.activate', { room_id: wrid });
+      if (!wAct.ok) {
+        throw new Error(`link witness: room.activate failed: ${JSON.stringify(wAct.err)}`);
+      }
+      const wMint = await authority.call('invite.mint', {
+        room_id: wrid,
+        subject_id: peerSid,
+        role: 'member',
+        expires_at: new Date(Date.now() + 3600_000).toISOString().replace(/\.\d+Z$/, 'Z'),
+      });
+      if (!wMint.ok || !wMint.out?.capability) {
+        throw new Error(`link witness: invite.mint failed: ${JSON.stringify(wMint.err)}`);
+      }
+      const wRedeem = await peer.call('invite.redeem', { capability: wMint.out.capability }, { timeoutMs: deadlineMs });
+      if (!wRedeem.ok) {
+        throw new Error(
+          `link witness: the peer could not redeem over the link (daemon-to-daemon discovery): ${JSON.stringify(wRedeem.err)}`,
+        );
+      }
+      const wLive = await peer.call('room.activate', { room_id: wrid });
+      if (!wLive.ok) {
+        throw new Error(`link witness: peer room.activate failed: ${JSON.stringify(wLive.err)}`);
+      }
+      await pollUntil({
+        deadlineMs,
+        describe: `witness joiner timeline shows authority-authored events (cross-daemon link)`,
+        probe: async () => {
+          const tl = await peer.call('room.timeline', {
+            room_id: wrid, cursor: { state: 'start' }, direction: 'forward', limit: 100,
+          });
+          const events = tl.out?.events || [];
+          const ok = events.some((e) => e.author?.subject_id === vars.sa);
+          return { done: ok, detail: `${events.length} events, authority-authored=${ok}` };
+        },
+      });
+      await pollUntil({
+        deadlineMs,
+        describe: `authority timeline shows the witness member join`,
+        probe: async () => {
+          const tl = await authority.call('room.timeline', {
+            room_id: wrid, cursor: { state: 'start' }, direction: 'forward', limit: 100,
+          });
+          const events = tl.out?.events || [];
+          const ok = events.some((e) => e.kind === 'member_joined');
+          return { done: ok, detail: events.map((e) => e.kind).join(',') || 'none' };
+        },
+      });
+      this.log(`link:up witnessed via a dedicated witness room joined by ${peerLabel} (real cross-daemon round on the case's daemons)`);
     }
   }
 
@@ -1539,7 +1619,12 @@ export class Runner {
         }
         return { files, bytes, newest };
       };
-      return JSON.stringify(walk(daemons[0].dataDir));
+      // EVERY staged daemon's store, not just the primary's: since 175c0b a
+      // member runs on its OWN daemon, so a no_durable_mutation observation
+      // after a member operation must watch the store the operation ran on —
+      // an illegal mutation or stranded file on a secondary daemon would
+      // otherwise pass unnoticed (review-caught on PR #312).
+      return JSON.stringify(daemons.map((d) => walk(d.dataDir)));
     } catch {
       return null;
     }
@@ -1547,14 +1632,15 @@ export class Runner {
 
   /** Whether the staging directory still holds any file, settled: cleanup is
    * asynchronous, so residue is only a violation if it persists past a
-   * bounded wait. */
+   * bounded wait. Checked on EVERY staged daemon, for the same reason as
+   * #dirStateSignature. */
   async #stagingResidue(daemons) {
-    const dir = join(daemons[0].dataDir, 'protocol-v2-stream-staging');
-    const residue = () => {
+    const residueAnywhere = () => daemons.some((d) => {
+      const dir = join(d.dataDir, 'protocol-v2-stream-staging');
       try { return readdirSync(dir).length > 0; } catch { return false; }
-    };
+    });
     const deadline = Date.now() + 2_000 * this.timeoutScale;
-    while (residue()) {
+    while (residueAnywhere()) {
       if (Date.now() > deadline) return true;
       await new Promise((r) => setTimeout(r, 100));
     }
@@ -1618,16 +1704,20 @@ export class Runner {
           if (reachable) throw new AssertFailure('expected none to be open (daemon still reachable)');
           return;
         }
-        // Named connections resolve through the actor catalog: an observe
-        // alias (`c1` → the canonical extra connection) maps onto the session
-        // the case actually opened, and an undeclared label is an error — the
-        // old "unknown label means any connection" fallback could pass on a
-        // connection the fixture never named. Observing never OPENS a
-        // connection: asserting one that was never opened is a failure.
+        // Named connections resolve through the actor catalog. The session
+        // KEY follows how #sessionFor registers connections: canonical-family
+        // labels share the slot's canonical connection, an observe alias
+        // (`c1` → subject:self#2) resolves onto the label that OPENED it
+        // (the alias is never a step label, so its key is the alias target),
+        // and every other extra/own connection registers under its own raw
+        // label. An undeclared label is an error — the old "unknown label
+        // means any connection" fallback could pass on a connection the
+        // fixture never named. Observing never OPENS a connection: asserting
+        // one that was never opened is a failure.
         const actor = resolveActor(vars.__case?.domain || '', label);
         const lookupLabel = actor.connectionKind === 'canonical'
           ? (vars.__case?.topology?.canonicalLabelFor(actor.slot) ?? label)
-          : label;
+          : (actor.aliasOf ?? label);
         const s = sessions.get(lookupLabel);
         if (!s) {
           throw new AssertFailure(`expected ${label} to be open, but no session was ever opened for it`);
@@ -1638,11 +1728,12 @@ export class Runner {
       case 'close_code': {
         const label = a.on || 'subject:self';
         // Canonical-family labels (subject:A / subject:self) observe the one
-        // canonical connection; observe aliases (c1) resolve onto it too.
+        // canonical connection; observe aliases (c1) resolve onto the label
+        // that opened the connection (the same key rule as connection_open).
         const closeActor = resolveActor(vars.__case?.domain || '', label);
         const closeLookup = closeActor.connectionKind === 'canonical'
           ? (vars.__case?.topology?.canonicalLabelFor(closeActor.slot) ?? label)
-          : label;
+          : (closeActor.aliasOf ?? label);
         const s = sessions.get(closeLookup);
         const want = Number(resolveValue(a.value, vars));
         // Wait briefly for a close if not yet observed.

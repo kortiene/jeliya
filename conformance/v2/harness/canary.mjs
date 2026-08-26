@@ -77,9 +77,14 @@ export async function runRealNetworkCanary(binary, { timeoutScale = 1, deadlineM
 
     // The redeem is the discovery dial: the joiner finds the minter with no
     // address hint through the ticket. This is the step loopback mode cannot
-    // do, so it gets the bounded wait.
+    // do, so it gets the bounded wait — with the CONFIGURED deadline as the
+    // call timeout (Session.call defaults to 10 s; a healthy-but-slow relay
+    // between 10 s and the deadline would otherwise abort the run early —
+    // review-caught on PR #312).
     const tRedeem = Date.now();
-    const redeem = await sessB.call('invite.redeem', { capability: mint.out.capability });
+    const redeem = await sessB.call('invite.redeem', { capability: mint.out.capability }, {
+      timeoutMs: deadline,
+    });
     if (!redeem.ok) {
       throw new Error(
         `canary invite.redeem failed after ${Date.now() - tRedeem}ms: ${JSON.stringify(redeem.err)}`,

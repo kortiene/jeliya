@@ -342,6 +342,31 @@ test('a missing binary fails CLEAN (message + nonzero, no leaked temp dir)', asy
   assert.ok(after <= before, `spawn failure leaked ${after - before} temp dirs`);
 });
 
+// NOTE (no separate red-demo test for the multi-store mutation watch): the
+// dir baseline legitimately advances after EVERY daemon-interacting step
+// (a successful op legally writes durably), so a DSL-authored
+// "mutate-then-observe" sequence passes by design in both the single- and
+// multi-store versions. The pre-fix gap (PR #312 review) was LATE ASYNC
+// writes on a secondary daemon's store — the window between the last
+// settle and a later observe — which no fixture can author on demand. The
+// fix is verified by inspection (both #dirStateSignature and
+// #stagingResidue iterate every staged daemon) plus the corpus-wide
+// no-regression run; the scenario slices that will exercise it durably
+// are 175c1+.
+
+test('observe aliases resolve onto the connection that was opened (c1 pin)', async () => {
+  const { Runner } = await import(join(HERE, 'runner.mjs'));
+  const runner = new Runner(jeliyadBin());
+  // The corpus's own c1 usage: subject:self#2 opens the extra connection,
+  // then asserts `connection_open on c1`. Before the alias-target fix the
+  // observe looked up the literal "c1" key and false-red with "no session
+  // was ever opened for it" (PR #312 review).
+  const tl = JSON.parse(readFileSync(join(CORPUS_DIR, 'timeline-streams.json'), 'utf8')).cases;
+  const c = tl.find((x) => x.name === 'message_body_of_exactly_max_message_body_bytes_is_accepted');
+  const result = await runner.runCase({ ...c, _file: 'timeline-streams.json' });
+  assert.equal(result.outcome, 'pass', result.reason);
+});
+
 test('a label whose slot was never staged fails as a missing role (not default-to-primary)', async () => {
   const { Runner, Outcome } = await import(join(HERE, 'runner.mjs'));
   const runner = new Runner(jeliyadBin());
