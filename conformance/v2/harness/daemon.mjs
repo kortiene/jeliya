@@ -112,8 +112,18 @@ export async function startDaemon(binary, { loopback = true } = {}) {
   proc.stderr.on('data', (d) => {
     stderr += d;
   });
+  // A spawn failure (ENOENT for a missing binary, EACCES) emits an 'error'
+  // EVENT rather than throwing; unhandled it crashes the process ugly and
+  // leaks the temp data dir. Catch it, clean up, and fail clean — the
+  // RealNetwork canary's "abort with a message" promise depends on it.
+  const spawnFailure = new Promise((_, reject) => {
+    proc.once('error', (err) => reject(err));
+  });
   try {
-    const pf = await readPortfile(dataDir, READY_TIMEOUT_MS);
+    const pf = await Promise.race([
+      readPortfile(dataDir, READY_TIMEOUT_MS),
+      spawnFailure,
+    ]);
     // The portfile carries BOTH generation axes: `protocol` (the wire
     // protocol number a client must speak) and `storage_generation` (the
     // storage era the upgrade's `sg` must declare). Both are 2 today, which
@@ -122,7 +132,7 @@ export async function startDaemon(binary, { loopback = true } = {}) {
     // actually requires.
     return new Daemon(proc, dataDir, pf.port, pf.auth_token, pf.storage_generation);
   } catch (err) {
-    proc.kill('SIGKILL');
+    try { proc.kill('SIGKILL'); } catch { /* never started */ }
     rmSync(dataDir, { recursive: true, force: true });
     throw new Error(`daemon failed to start: ${err.message}\nstderr: ${stderr.slice(-500)}`);
   }

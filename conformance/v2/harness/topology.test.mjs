@@ -311,7 +311,35 @@ test('total cleanup: RealNetwork and control-stopped runs leave zero new daemon 
   const after = countDirs();
   assert.equal(r1.outcome, 'pass', r1.reason);
   assert.equal(r2.outcome, 'pass', r2.reason);
-  assert.equal(after, before, `leaked ${after - before} daemon data dirs — total cleanup is broken`);
+  // A leak strictly INCREASES the count; an unrelated dir disappearing on
+  // this shared host must not false-red the probe.
+  assert.ok(after <= before, `leaked ${after - before} daemon data dirs — total cleanup is broken`);
+});
+
+test('own-principal labels run on their OWN connections and cids (runner-level pin)', async () => {
+  const { Runner, Outcome } = await import(join(HERE, 'runner.mjs'));
+  const runner = new Runner(jeliyadBin());
+  // The corpus case that pins the semantics: the SAME op_id from two
+  // distinct session principals must both succeed (the dedup ledger is
+  // keyed per principal). Collapsing the principals onto one connection
+  // (the reviewer-caught bug) makes the second call an op_id_conflict —
+  // a runner-caused false-red.
+  const rooms = JSON.parse(readFileSync(join(CORPUS_DIR, 'rooms.json'), 'utf8')).cases;
+  const c = rooms.find((x) =>
+    x.name === 'room_create_dedup_ledger_is_scoped_to_the_session_principal_not_the_subject');
+  const result = await runner.runCase({ ...c, _file: 'rooms.json' });
+  assert.equal(result.outcome, Outcome.PASS, result.reason);
+});
+
+test('a missing binary fails CLEAN (message + nonzero, no leaked temp dir)', async () => {
+  const { startDaemon } = await import(join(HERE, 'daemon.mjs'));
+  const before = readdirSync('/tmp').filter((d) => d.startsWith('jeliya-conf-')).length;
+  await assert.rejects(
+    () => startDaemon('/nonexistent/jeliyad-definitely-missing'),
+    /daemon failed to start:.*ENOENT/s,
+  );
+  const after = readdirSync('/tmp').filter((d) => d.startsWith('jeliya-conf-')).length;
+  assert.ok(after <= before, `spawn failure leaked ${after - before} temp dirs`);
 });
 
 test('a label whose slot was never staged fails as a missing role (not default-to-primary)', async () => {

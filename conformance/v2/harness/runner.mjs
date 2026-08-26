@@ -950,7 +950,17 @@ export class Runner {
     // violation on the outgoing connection must not vanish with it.
     const outgoing = sessions.get(lookupLabel);
     if (outgoing && outgoing.stickyBinaryViolation) throw outgoing.stickyBinaryViolation;
-    const daemon = vars.__case?.topology?.daemonFor(actor.slot) ?? (vars.__case || {}).primary;
+    const daemon = vars.__case?.topology?.daemonFor(actor.slot);
+    if (!daemon) {
+      // No latent default-to-primary here either: an upgrade against a slot
+      // the case never staged is a missing-role setup error, exactly like
+      // #sessionFor. (No corpus upgrade names a non-authority label today;
+      // this guard keeps it that way loudly.)
+      throw new Error(
+        `missing role: upgrade for "${label}" resolves to topology slot "${actor.slot}", ` +
+          `but the case's requires staged no daemon there`,
+      );
+    }
     const query = {};
     for (const [k, v] of Object.entries(u.query || {})) {
       const resolved = resolveValue(v, vars);
@@ -1168,10 +1178,14 @@ export class Runner {
     }
   }
 
-  /** An `http` step: a Layer 0 or /api/session request. */
+  /** An `http` step: a Layer 0 or /api/session request. An http step
+   * carries no actor label — it targets the case's daemon, which IS the
+   * authority slot's (the primary), resolved through the topology rather
+   * than a bare field read so no unstaged-slot path can exist here. */
   async #doHttp(step, env) {
     const { vars } = env;
-    const daemon = (vars.__case||{}).primary;
+    const daemon = vars.__case?.topology?.daemonFor('authority');
+    if (!daemon) throw new Error('http step: no authority daemon staged for this case');
     const h = step.http;
     const headers = {};
     for (const [k, v] of Object.entries(h.headers || {})) {

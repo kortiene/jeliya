@@ -31,7 +31,7 @@ export const SLOTS = Object.freeze([
   'authority', // the case's primary daemon: subject $sa (aliases A/self)
   'invitee', // a redeeming joiner: subject $sb (second/invitee/joiner)
   'member', // an additional active member: subject $sd (B/member/member_b)
-  'member2', // a second additional member: subject $se (D/member_c)
+  'member2', // a second additional member (D/member_c; binds $member_c_sid)
   'outsider', // a subject with no room relationship: $sc (outsider/bystander/C)
   'agent', // an agent member (member:agent staging is not implemented)
 ]);
@@ -194,7 +194,17 @@ export function resolveActor(domain, label) {
     principalKey: entry.principal === 'canonical' || entry.principal === 'replace'
       ? 'canonical'
       : label,
-    connectionKind: entry.principal === 'replace' ? 'replace' : 'canonical',
+    // The CONNECTION axis: only a canonical-principal label shares the
+    // slot's ONE canonical connection. An own-principal label (A2,
+    // principal:self, principal:second, principal_1/2…) and an ephemeral
+    // attached session (session:cX) each open their OWN connection —
+    // sharing the canonical socket would collapse the principal axis
+    // entirely (the reviewer-caught P1: the distinct cid was minted but
+    // never presented, so two "principals" hit one dedup ledger and the
+    // per-principal cases false-red with op_id_conflict).
+    connectionKind: entry.principal === 'canonical' ? 'canonical'
+      : entry.principal === 'replace' ? 'replace'
+      : 'own',
     label,
   };
 }
