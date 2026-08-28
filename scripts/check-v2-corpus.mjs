@@ -1589,7 +1589,10 @@ if (isObject(manifest)) {
     binary_byte_stream_executor: {
       status: "partial",
       send_bytes: "implemented",
-      receive_bytes: "implemented_no_executable_case",
+      // 175c1a: the selected slice's file.read step executes a
+      // receive_bytes stream (the #50 positive-leg case), so the status
+      // moved from "implemented_no_executable_case".
+      receive_bytes: "implemented",
       bytes_streamed_observation: "implemented",
       client_abort_fault: "implemented",
       raw_record_fault: "implemented",

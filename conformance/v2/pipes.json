@@ -3265,7 +3265,7 @@
                   "providers": [
                     {
                       "device_id": "<string>",
-                      "reachable": true
+                      "link": "<link_connected>"
                     }
                   ],
                   "fetchable": true,
@@ -3548,11 +3548,13 @@
                   "providers": [
                     {
                       "device_id": "<string>",
-                      "reachable": false
+                      "link": {
+                        "state": "not_connected",
+                        "reason": "<link_reason>"
+                      }
                     }
                   ],
-                  "fetchable": false,
-                  "unfetchable_reason": "<any>"
+                  "fetchable": false
                 }
               ]
             }

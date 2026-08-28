@@ -339,7 +339,16 @@ export class Runner {
             `resource:shared_file setup failed: ${JSON.stringify(reply.ok ? reply.out : reply.err)}`,
           );
         }
-        vars.fid = reply.out.file_id;
+        // 175c1a (mechanics #3): when a consumer peer is staged, the share is
+        // not staging until the CONSUMER's own file.list serves the file —
+        // share propagation is setup, never a case step, so `$fid` binds only
+        // after the remote row is visible (the confirmation below). A
+        // single-subject case has no consumer and binds here.
+        if (vars.__case.topology.daemonFor('member')) {
+          vars.__case.pendingSharedFile = reply.out.file_id;
+        } else {
+          vars.fid = reply.out.file_id;
+        }
       }
     }
 
@@ -360,6 +369,38 @@ export class Runner {
           bind: { sd: true }, daemons, sessions, vars,
         });
       }
+    }
+
+    // The remote half of `resource:shared_file` staging (175c1a): the
+    // consumer's file.list must serve the shared file before `$fid` binds.
+    // A bounded evidence poll whose expiry is a setup ERROR — never a pass,
+    // never a silent bind of an id the consumer cannot yet see — the same
+    // deadline-poll shape as the link witness. Runs after every join path
+    // (member:b stages its join above the share; the link:up default peer
+    // joins just above), so the consumer is a member with a live link first.
+    if (vars.__case.pendingSharedFile !== undefined) {
+      const fid = vars.__case.pendingSharedFile;
+      // No fallback label: a member daemon without its canonical connection
+      // label is an invariant break that must fail loudly here, never route
+      // the confirmation onto another slot's session.
+      const consumerLabel = vars.__case.topology.canonicalLabelFor('member');
+      if (!consumerLabel) {
+        throw new Error('shared-file staging: the member slot has no canonical connection label');
+      }
+      const consumer = await this.#sessionFor(consumerLabel, daemons, sessions, vars);
+      await pollUntil({
+        deadlineMs: LINK_WITNESS_DEADLINE_MS * this.timeoutScale,
+        describe: `consumer (${consumerLabel}) file.list serves the shared file ${fid}`,
+        probe: async () => {
+          const list = await consumer.call('file.list', {
+            room_id: vars.rid, cursor: { state: 'start' }, direction: 'forward', limit: 50,
+          });
+          const files = list.out?.files || [];
+          const hit = files.some((f) => f.file_id === fid);
+          return { done: hit, detail: `${files.length} file row(s) visible${hit ? ' (the seed is one of them)' : ''}` };
+        },
+      });
+      vars.fid = fid;
     }
 
     // Bare `subject` means the daemon's one subject exists (`subject:none` is

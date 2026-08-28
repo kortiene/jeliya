@@ -91,7 +91,7 @@ test('a legal --case selection passes the guards and reports the count', () => {
   assert.equal(selection.cases[0].name, 'daemon_stop_does_not_require_a_subject');
 });
 
-test('the 26 CI-selected cases select cleanly through the same path', async () => {
+test('the 27 CI-selected cases select cleanly through the same path', async () => {
   const cases = loadCases(null);
   const args = parseArgs(['bin', ...cases.slice(0, 0).map(() => '').filter(() => false)]);
   // Rebuild the CI selector list from the workflow the checker itself parses.
@@ -99,11 +99,11 @@ test('the 26 CI-selected cases select cleanly through the same path', async () =
     readFileSync(join(HERE, '..', '..', '..', '.github', 'workflows', 'ci.yml'), 'utf8'));
   const liveStep = ci.match(/- name: Protocol-v2 conformance replay[\s\S]*?(?=\n      - name:|$)/)?.[0] ?? '';
   const selectors = [...liveStep.matchAll(/--case\s+([^\s\\]+)/g)].map((m) => m[1]);
-  assert.equal(selectors.length, 26);
+  assert.equal(selectors.length, 27);
   for (const s of selectors) args.caseNames.push(s);
   const selection = selectCases(cases, args);
   assert.equal(selection.error, undefined, JSON.stringify(selection.error));
-  assert.equal(selection.cases.length, 26);
+  assert.equal(selection.cases.length, 27);
 });
 
 // ── Requires honesty ───────────────────────────────────────────────────────
@@ -324,6 +324,126 @@ test('form discriminators: padded vs bare vs ordinary values', () => {
   assert.ok(isBareEnvelope({ envelope: { id: 1, op: 'x' } }));
   assert.ok(!isBareEnvelope({ envelope: { id: 1 }, pad_field: 'in.x' }));
   assert.ok(!isBareEnvelope('plain string'));
+});
+
+// ── Wildcard value assertions (175c1a: the engine repair) ──────────────────
+// The README's own canonical example is a wildcard value assertion
+// (`out.rooms[*].role` + member_of), but the engine's wildcard branch fed
+// RAW values to an `each()` that expects {found, value} wrappers — every
+// wildcard value-op (type/eq/member_of/len/no_nulls/…) false-reded with
+// "did not resolve", and unique/increasing compared JSON.stringify(undefined).
+// These pins hold the repaired semantics: value ops iterate the matched
+// elements, and a wildcard matching NOTHING fails every op except `absent`
+// (an empty iteration is the vacuous pass the DSL forbids).
+
+test('wildcard value assertions iterate the matched elements', async () => {
+  const { evalValueAssertion } = await import(join(HERE, 'assert.mjs'));
+  const ctx = () => ({
+    vars: {
+      out: {
+        peers: [
+          { device_id: 'd1', link: { state: 'direct', since: '2026-08-26T00:00:00Z' } },
+          { device_id: 'd2', link: { state: 'relay', since: '2026-08-26T00:00:01Z' } },
+        ],
+      },
+    },
+    observe: null,
+    sessions: null,
+  });
+  // type: holds for every element, fails on any wrong one.
+  evalValueAssertion({ path: 'out.peers[*].link.since', op: 'type', value: 'ts' }, ctx());
+  assert.throws(
+    () => evalValueAssertion({ path: 'out.peers[*].link.since', op: 'type', value: 'uint' }, ctx()),
+    /not of domain/,
+  );
+  // member_of over a wildcard.
+  evalValueAssertion({ path: 'out.peers[*].link.state', op: 'member_of', value: ['direct', 'relay'] }, ctx());
+  assert.throws(
+    () => evalValueAssertion({ path: 'out.peers[*].link.state', op: 'member_of', value: ['direct'] }, ctx()),
+    /not in/,
+  );
+  // no_nulls sees INTO every matched element.
+  evalValueAssertion({ path: 'out.peers[*].link', op: 'no_nulls' }, ctx());
+  const withNull = ctx();
+  withNull.vars.out.peers[1].link.since = null;
+  assert.throws(
+    () => evalValueAssertion({ path: 'out.peers[*].link', op: 'no_nulls' }, withNull),
+    /contains a null/,
+  );
+  // unique distinguishes real values (undefined-stringifying was the bug).
+  evalValueAssertion({ path: 'out.peers[*].device_id', op: 'unique' }, ctx());
+  const dup = ctx();
+  dup.vars.out.peers[1].device_id = 'd1';
+  assert.throws(
+    () => evalValueAssertion({ path: 'out.peers[*].device_id', op: 'unique' }, dup),
+    /not unique/,
+  );
+});
+
+test('a wildcard that matches no elements fails every value op and never passes vacuously', async () => {
+  const { evalValueAssertion } = await import(join(HERE, 'assert.mjs'));
+  const ctx = { vars: { out: { peers: [] } }, observe: null, sessions: null };
+  for (const a of [
+    { path: 'out.peers[*].device_id', op: 'type', value: 'string' },
+    { path: 'out.peers[*].device_id', op: 'unique' },
+    { path: 'out.peers[*].link', op: 'no_nulls' },
+  ]) {
+    assert.throws(
+      () => evalValueAssertion(a, ctx),
+      /matched no elements/,
+      `${a.op} on an empty wildcard must fail, not pass vacuously`,
+    );
+  }
+  // present on an empty wildcard still fails; absent still holds.
+  assert.throws(() => evalValueAssertion({ path: 'out.peers[*].device_id', op: 'present' }, ctx), /present/);
+  evalValueAssertion({ path: 'out.peers[*].device_id', op: 'absent' }, ctx);
+});
+
+test('a MIXED wildcard keeps its unresolved branches and fails the assertion (PR #313 review)', async () => {
+  const { evalValueAssertion } = await import(join(HERE, 'assert.mjs'));
+  // One connected peer WITH link.since, one not_connected peer WITHOUT —
+  // the collector must not silently drop the unresolved branch and pass
+  // on the survivor.
+  const ctx = {
+    vars: {
+      out: {
+        peers: [
+          { device_id: 'd1', link: { state: 'direct', since: '2026-08-26T00:00:00Z' } },
+          { device_id: 'd2', link: { state: 'not_connected', reason: 'closed' } },
+        ],
+      },
+    },
+    observe: null,
+    sessions: null,
+  };
+  for (const a of [
+    { path: 'out.peers[*].link.since', op: 'type', value: 'ts' },
+    { path: 'out.peers[*].link.since', op: 'present' },
+    { path: 'out.peers[*].link.since', op: 'unique' },
+  ]) {
+    assert.throws(
+      () => evalValueAssertion(a, ctx),
+      a.op === 'present' ? /present/ : /did not resolve for element \[1\]|matched no elements/,
+      `${a.op} must fail while an element lacks the tail`,
+    );
+  }
+  // The all-resolving twin still passes, and absent correctly fails when
+  // SOME element has the key / holds when none does.
+  const okCtx = {
+    vars: { out: { peers: [
+      { device_id: 'd1', link: { state: 'direct', since: '2026-08-26T00:00:00Z' } },
+      { device_id: 'd2', link: { state: 'relay', since: '2026-08-26T00:00:01Z' } },
+    ] } },
+    observe: null,
+    sessions: null,
+  };
+  evalValueAssertion({ path: 'out.peers[*].link.since', op: 'type', value: 'ts' }, okCtx);
+  evalValueAssertion({ path: 'out.peers[*].link.since', op: 'present' }, okCtx);
+  assert.throws(
+    () => evalValueAssertion({ path: 'out.peers[*].link.since', op: 'absent' }, okCtx),
+    /absent/,
+  );
+  evalValueAssertion({ path: 'out.peers[*].link.nope', op: 'absent' }, okCtx);
 });
 
 process.on('exit', () => {

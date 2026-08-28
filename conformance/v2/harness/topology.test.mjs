@@ -331,6 +331,22 @@ test('own-principal labels run on their OWN connections and cids (runner-level p
   assert.equal(result.outcome, Outcome.PASS, result.reason);
 });
 
+test('the #50 provider-availability positive leg runs green end-to-end (live pin)', async () => {
+  const { Runner, Outcome } = await import(join(HERE, 'runner.mjs'));
+  const runner = new Runner(jeliyadBin());
+  // The corpus's own 175c1a case: a real streamed file on the authority, a
+  // consumer joined over the RealNetwork link, and provider availability
+  // read as its own transport fact (fetch, read, and the self_hosted flip
+  // included). Pins the remote staging confirmation too: $fid binds only
+  // after the consumer's file.list serves the row, so a broken
+  // confirmation fails here as a setup ERROR rather than racing the case.
+  const files = JSON.parse(readFileSync(join(CORPUS_DIR, 'files.json'), 'utf8')).cases;
+  const c = files.find((x) =>
+    x.name === 'list_serves_provider_availability_as_its_own_transport_fact');
+  const result = await runner.runCase({ ...c, _file: 'files.json' });
+  assert.equal(result.outcome, Outcome.PASS, result.reason);
+});
+
 test('a missing binary fails CLEAN (message + nonzero, no leaked temp dir)', async () => {
   const { startDaemon } = await import(join(HERE, 'daemon.mjs'));
   const before = readdirSync('/tmp').filter((d) => d.startsWith('jeliya-conf-')).length;

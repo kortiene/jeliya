@@ -2090,7 +2090,7 @@
                       "subject_id": "$member",
                       "device_id": "<string>",
                       "link": {
-                        "state": "unreachable",
+                        "state": "not_connected",
                         "reason": "no_route"
                       }
                     }
@@ -2146,6 +2146,270 @@
             }
           },
           "note": "the fact tracks observed transport, not the member list"
+        }
+      ]
+    },
+    {
+      "name": "list_serves_provider_availability_as_its_own_transport_fact",
+      "kind": "success",
+      "operation": "file.list",
+      "intent": "The positive leg of #50 on a real cross-daemon link: the consumer's file.list states provider availability from transport evidence only — named provider devices carrying the same per-device link type room.peers uses, fetchable true while the link is up, self_hosted false before a fetch and true after it (one fact, one place), with v1's inference-shaped fields (available, providers_count, local_path, local_bytes, fetched, reachable, unfetchable_reason) absent. A successful file.fetch names the serving provider and returns the digest file.list served (the fetcher held no other expected value), file.read streams the held bytes, and membership and presence are each read from their own operation — never consulted for availability.",
+      "requires": [
+        "subject",
+        "room:live",
+        "link:up",
+        "resource:shared_file"
+      ],
+      "steps": [
+        {
+          "call": "room.members",
+          "in": {
+            "room_id": "$rid"
+          },
+          "on": "subject:B",
+          "expect": {
+            "ok": true,
+            "out": {
+              "room_id": "<room_id>",
+              "members": [
+                {
+                  "subject_id": "<subject_id>",
+                  "role": "<string>",
+                  "standing": "<standing>",
+                  "joined_at": "<ts>"
+                }
+              ]
+            }
+          },
+          "note": "membership is the authoritative signed answer and carries no presence and no reachability — it is read here from its own operation and never consulted for availability"
+        },
+        {
+          "assert": [
+            {
+              "path": "out.members[*].subject_id",
+              "op": "present"
+            },
+            {
+              "path": "out.members[*].standing",
+              "op": "present"
+            },
+            {
+              "path": "out",
+              "op": "no_nulls"
+            }
+          ],
+          "on": "subject:B"
+        },
+        {
+          "call": "room.peers",
+          "in": {
+            "room_id": "$rid"
+          },
+          "on": "subject:B",
+          "save": {
+            "peer_device": "out.peers[0].device_id"
+          },
+          "expect": {
+            "ok": true,
+            "out": {
+              "peers": [
+                {
+                  "subject_id": "<subject_id>",
+                  "device_id": "<device_id>",
+                  "link": "<link_connected>"
+                }
+              ]
+            }
+          },
+          "note": "presence is the observed transport fact for this live room, per device — its own operation, separate from membership"
+        },
+        {
+          "assert": [
+            {
+              "path": "out.peers[*].device_id",
+              "op": "present"
+            },
+            {
+              "path": "out.peers[*].link.since",
+              "op": "type",
+              "value": "ts"
+            }
+          ],
+          "on": "subject:B"
+        },
+        {
+          "call": "file.list",
+          "in": {
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
+          },
+          "on": "subject:B",
+          "save": {
+            "provider_device": "out.files[0].providers[0].device_id",
+            "list_digest": "out.files[0].digest",
+            "list_bytes": "out.files[0].bytes"
+          },
+          "expect": {
+            "ok": true,
+            "out": {
+              "files": [
+                {
+                  "file_id": "$fid",
+                  "providers": [
+                    {
+                      "subject_id": "$sa",
+                      "device_id": "$peer_device",
+                      "link": "<link_connected>"
+                    }
+                  ],
+                  "fetchable": true,
+                  "self_hosted": false
+                }
+              ]
+            }
+          },
+          "note": "the provider row's device is the device room.peers just linked and its link is the same per-device type — availability is a protocol fact with evidence, not a count, not a boolean inferred from the roster"
+        },
+        {
+          "assert": [
+            {
+              "path": "out.files[0].available",
+              "op": "absent"
+            },
+            {
+              "path": "out.files[0].providers_count",
+              "op": "absent"
+            },
+            {
+              "path": "out.files[0].local_path",
+              "op": "absent"
+            },
+            {
+              "path": "out.files[0].local_bytes",
+              "op": "absent"
+            },
+            {
+              "path": "out.files[0].fetched",
+              "op": "absent"
+            },
+            {
+              "path": "out.files[0].unfetchable_reason",
+              "op": "absent"
+            },
+            {
+              "path": "out.files[0].providers[*].reachable",
+              "op": "absent"
+            },
+            {
+              "path": "out.files[0].providers[*].link.since",
+              "op": "type",
+              "value": "ts"
+            }
+          ],
+          "on": "subject:B"
+        },
+        {
+          "call": "file.fetch",
+          "in": {
+            "room_id": "$rid",
+            "file_id": "$fid"
+          },
+          "on": "subject:B",
+          "expect": {
+            "ok": true,
+            "out": {
+              "room_id": "$rid",
+              "file_id": "$fid",
+              "bytes": "$list_bytes",
+              "digest": "$list_digest",
+              "provider": {
+                "subject_id": "$sa",
+                "device_id": "$provider_device"
+              }
+            }
+          },
+          "op_id": "op-pa-1",
+          "note": "the fetch is served by the provider file.list named, and the verified digest is the one file.list served — a fetcher that did not share the file has no other expected value"
+        },
+        {
+          "call": "file.read",
+          "in": {
+            "room_id": "$rid",
+            "file_id": "$fid"
+          },
+          "on": "subject:B",
+          "expect": {
+            "ok": true,
+            "out": {
+              "room_id": "$rid",
+              "file_id": "$fid",
+              "bytes": 4096,
+              "declared_content_type": "application/octet-stream"
+            }
+          },
+          "stream": {
+            "receive_bytes": 4096
+          }
+        },
+        {
+          "assert": [
+            {
+              "observe": "bytes_streamed",
+              "value": {
+                "op": "eq",
+                "value": 4096
+              },
+              "call": "step:8"
+            }
+          ],
+          "on": "subject:B"
+        },
+        {
+          "call": "file.list",
+          "in": {
+            "room_id": "$rid",
+            "cursor": {
+              "state": "start"
+            },
+            "direction": "forward",
+            "limit": 50
+          },
+          "on": "subject:B",
+          "expect": {
+            "ok": true,
+            "out": {
+              "files": [
+                {
+                  "file_id": "$fid",
+                  "fetchable": true,
+                  "self_hosted": true
+                }
+              ]
+            }
+          },
+          "note": "after the fetch, whether bytes are held is answered by self_hosted alone — the fetch reply did not report it, and no fetched field appears to carry it a second time"
+        },
+        {
+          "assert": [
+            {
+              "path": "out.files[0].fetched",
+              "op": "absent"
+            },
+            {
+              "path": "out.files[0].local_bytes",
+              "op": "absent"
+            },
+            {
+              "path": "out.files[0].providers[*].link.since",
+              "op": "type",
+              "value": "ts"
+            }
+          ],
+          "on": "subject:B"
         }
       ]
     },
