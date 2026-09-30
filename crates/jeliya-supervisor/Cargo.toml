@@ -34,7 +34,7 @@ fd-lock = "4"
 # whole process group) and `kill` (the proven-owned eviction SIGTERM fallback).
 # nix wraps the libc calls, so this crate keeps `unsafe_code = "forbid"`. Its
 # transitive deps (libc, cfg-if, bitflags) are already in the workspace lock.
-nix = { version = "0.29", default-features = false, features = ["signal"] }
+nix = { version = "0.31", default-features = false, features = ["signal"] }
 
 [dev-dependencies]
 # `macros` (for `#[tokio::test]`) and `rt-multi-thread` (for the test harness
