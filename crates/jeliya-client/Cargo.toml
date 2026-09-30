@@ -94,7 +94,7 @@ futures = { version = "0.3", default-features = false, features = ["std", "async
 # dependency edges. `minimal` gives the macro, signals, and hooks without
 # pulling `tao`/`wry`/a web renderer, so the component links on native and
 # wasm32 alike.
-dioxus = { version = "=0.7.9", default-features = false, features = ["minimal"], optional = true }
+dioxus = { version = "=0.7.10", default-features = false, features = ["minimal"], optional = true }
 # The protocol's only JSON, both directions. Optional and enabled solely by
 # `ws-web`: the client edge (`encode_request`/`decode_client_frame`) is used by
 # the browser adapter, so the codec never enters the native library tree (the
