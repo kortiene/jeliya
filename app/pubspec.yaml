@@ -18,7 +18,7 @@ dependencies:
 
   # Pinned by flutter_localizations; used directly for DateFormat/NumberFormat
   # under the separate FORMATTING locale (docs/i18n.md, decision 4).
-  intl: any
+  intl: 0.20.3
 
   cupertino_icons: ^1.0.8
 
