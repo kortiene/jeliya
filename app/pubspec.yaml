@@ -20,7 +20,7 @@ dependencies:
   # under the separate FORMATTING locale (docs/i18n.md, decision 4).
   intl: any
 
-  cupertino_icons: ^1.0.8
+  cupertino_icons: ^2.0.0
 
   # Native file picking (Composer / Files tab share flow).
   file_selector: ^1.0.3
