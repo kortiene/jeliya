@@ -137,7 +137,7 @@ jobs:
       # accessibility specs attach the axe violation list alongside them.
       - name: Preserve failure evidence (screenshots, traces, console logs)
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playwright-failure-evidence
           path: |
@@ -827,7 +827,7 @@ jobs:
 
       - name: Preserve render smoke failure evidence
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: jeliya-ui-render-smoke-evidence
           path: |
@@ -905,7 +905,7 @@ jobs:
 
       - name: Preserve browser test failure evidence
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: jeliya-client-ws-web-evidence
           path: /tmp/wasm-bindgen-test-*
@@ -1048,7 +1048,7 @@ jobs:
 
       - name: Preserve accessibility failure evidence
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: jeliya-ui-a11y-evidence
           path: |
